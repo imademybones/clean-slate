@@ -131,3 +131,18 @@ test('previous days, 7-day average and the JSON export include food', async () =
   for (const k of ['cleanslate_food_lib', 'cleanslate_food_log', 'cleanslate_food_targets']) assert.ok(keys.includes(k), k);
   assert.deepEqual(page.errors, []);
 });
+
+test('future days: plan tomorrow, then come back to today', async () => {
+  await page.click('[data-nav=food]');
+  assert.equal(await page.locator('.fd-today').count(), 0);
+  await page.click('[aria-label="Next day"]');
+  assert.match(await page.textContent('.fd-label'), /Tomorrow/);
+  await page.click('.meal-chip:has-text("Usual breakfast") >> nth=0');
+  assert.ok((await log()).some((e) => e.date === '2026-11-10'), 'logged on tomorrow');
+  await page.click('[aria-label="Next day"]');
+  assert.match(await page.textContent('.fd-label'), /Wed 11 Nov/);
+  await page.click('.fd-today');
+  assert.match(await page.textContent('.fd-label'), /^Today/);
+  assert.match(await page.textContent('.food-home, .fs-big'), /1241/, 'today unchanged');
+  assert.deepEqual(page.errors, []);
+});
