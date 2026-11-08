@@ -42,7 +42,7 @@ test('session uploads once, after feedback, with log + state', async () => {
 test('older local-only sessions are backfilled', async () => {
   await page.evaluate(() => { const l = JSON.parse(localStorage.cleanslate_rp_logs); l.unshift(Object.assign({}, l[0], { id: l[0].id - 100000, session: 'C' })); localStorage.cleanslate_rp_logs = JSON.stringify(l); });
   await page.click('[data-nav=manage]');
-  await page.click('text=Back up RP sessions now'); await page.waitForTimeout(500);
+  await page.click('text=Back up to Airtable now'); await page.waitForTimeout(500);
   assert.equal(posts(), 2);
 });
 
