@@ -1,7 +1,7 @@
 {
   "name": "Clean Slate · Gym Tracker",
   "short_name": "Gym Tracker",
-  "description": "Run-Strength gym programme and 800 m running comeback plan, plus RP Recomp and PPL – training tracker with progression, set logging and offline support.",
+  "description": "Run-Strength gym programme and 800 m running comeback plan, plus RP Recomp and PPL – training tracker with progression, set logging, calorie tracking and offline support.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

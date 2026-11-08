@@ -56,7 +56,8 @@ function fakeWorker() {
 }
 
 async function launch() {
-  const browser = await chromium.launch();
+  // PW_CHROMIUM: use an already-installed Chromium instead of Playwright's own download
+  const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
   return browser;
 }
 

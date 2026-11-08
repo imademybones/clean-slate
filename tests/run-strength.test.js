@@ -23,7 +23,8 @@ test('v9 data survives the upgrade and RP Recomp is still there', async () => {
     cleanslate_rp_logs: logsRaw, cleanslate_rp_synced: '[1761000000000]', cs3_stats: '{"total":5,"week":1,"weekOf":"2026-10-20"}'
   } });
   const ls = await page.evaluate(() => Object.assign({}, localStorage));
-  assert.equal(ls.cleanslate_schema, '1');
+  assert.equal(ls.cleanslate_schema, '2', 'v9 → v10 → v11 in one go');
+  assert.ok(JSON.parse(ls.cleanslate_food_lib).meals.length, 'food library seeded');
   assert.equal(ls.cleanslate_rp_logs, logsRaw, 'RP logs untouched');
   assert.equal(ls.cleanslate_rp_synced, '[1761000000000]');
   assert.equal(JSON.parse(ls.cleanslate_premigration_v9).data.cleanslate_rp_logs, logsRaw, 'raw pre-migration copy kept');
