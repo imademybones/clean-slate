@@ -83,7 +83,10 @@ test('quick add, saved to My foods, then reusable', async () => {
 test('targets drive the remaining figure and the Home card', async () => {
   await page.fill('#tg-kcal', '2200'); await page.fill('#tg-p', '160'); await page.fill('#tg-f', '');
   await page.click('text=Save targets');
-  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.cleanslate_food_targets)), { kcal: 2200, protein: 160, carbs: 230 });
+  const saved = await page.evaluate(() => JSON.parse(localStorage.cleanslate_food_targets));
+  assert.ok(saved.at > 0, 'stamped for sync');
+  delete saved.at;
+  assert.deepEqual(saved, { kcal: 2200, protein: 160, carbs: 230 });
   assert.match(await page.textContent('.food-sum'), /959\s*kcal left/);
   await page.click('[data-nav=home]');
   assert.match(await page.textContent('.food-home'), /1241 \/ 2200 kcal/);

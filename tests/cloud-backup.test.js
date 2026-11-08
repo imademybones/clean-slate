@@ -77,7 +77,7 @@ test('gym sessions, runs, weigh-ins and plan position reach Airtable once', asyn
   await page.click('[data-nav=history]'); await page.waitForSelector('.hist-row');
   assert.equal(await page.locator('.hist-row').count(), 2);
   await page.click('[data-nav=manage]');
-  assert.match(await page.textContent('#bk-sync-status'), /2 gym sessions and runs on this phone · checked/);
+  assert.match(await page.textContent('#bk-sync-status'), /2 gym sessions and runs, 0 days of food on this phone · checked/);
 });
 
 test('a phone whose data was cleared gets everything back from Airtable', async () => {

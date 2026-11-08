@@ -430,13 +430,14 @@ textarea { resize:vertical; }
 //     versioned (cleanslate_schema) with migrations.
 // v11: Food tab – calorie + protein tracker. Library of foods and saved
 //     meals (seeded with the usual breakfast), one-tap meal logging,
-//     portions, quick add, daily kcal/macro targets, 7-day average. Local only for
-//     now (included in the JSON export). Days ahead can be planned too.
+//     portions, quick add, daily kcal/macro targets, 7-day average.
+//     Days ahead can be planned too.
 //     Gym sessions, runs, weigh-ins, benchmarks and plan position back up
 //     to Airtable (Sessions) and restore onto a phone that lost them; the
 //     app asks Chrome to keep its data; a missed day in the week view can
 //     be logged after the fact; gym sessions are dated by the day they're for.
 //     Manage → restart the run plan from a Monday, or undo repeated weeks.
+//     Food log, food library and targets back up to Airtable too.
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
 const CACHE_KEY = 'cleanslate_v3_cache';
@@ -2214,8 +2215,9 @@ async function rpBackupLog(log) {
   rpMarkSynced([log.id]);
   await writeThrough('/sessions', 'POST', { records: [rpBackupRecord(log)] }, true);
 }
+let rpSyncAgain = false;
 async function rpSync(loud) {
-  if (rpSyncing) return;
+  if (rpSyncing) { rpSyncAgain = true; return; }
   rpSyncing = true;
   try {
     const remote = await atList('sessions');
@@ -2263,11 +2265,12 @@ async function rpSync(loud) {
     for (const l of toSend) await rpBackupLog(l);
     if (loud) toast(toSend.length ? 'Backed up ' + toSend.length + ' session' + (toSend.length === 1 ? '' : 's') + ' ✓' : 'RP sessions already backed up ✓');
     localStorage.setItem('cleanslate_rp_lastsync', new Date().toISOString());
-    if ((missing.length || pulled || bkRestored) && (view === 'home' || view === 'history' || view === 'manage' || view === 'week' || view === 'progress')) render();
+    if ((missing.length || pulled || bkRestored) && (view === 'home' || view === 'history' || view === 'manage' || view === 'week' || view === 'progress' || view === 'food' || view === 'foodLib')) render();
   } catch (e) {
     if (loud) toast('Offline – backup will run when you\'re back online');
   } finally {
     rpSyncing = false;
+    if (rpSyncAgain) { rpSyncAgain = false; setTimeout(function(){ rpSync(); }, 0); }
     const st = document.getElementById('rp-sync-status');
     if (st) st.textContent = rpSyncStatus();
     const bs = document.getElementById('bk-sync-status');
@@ -3546,7 +3549,7 @@ function weightDelete(date) {
 }
 
 // ═══ FOOD: calorie + protein tracker (v11) ═════════════════
-// Stage one is local only (backed up by the JSON export). The library holds
+// Backed up to Airtable (see "food in Airtable") and the JSON export. The library holds
 // foods (one serving each) and saved meals (foods × qty). Every log entry
 // stores its own totals, so editing a food later never rewrites past days.
 const FOOD_LIB_KEY = 'cleanslate_food_lib';
@@ -3576,9 +3579,29 @@ function foodSeed() { return {
 let foodUid = 0;
 function foodId(prefix) { return prefix + Date.now().toString(36) + (foodUid++).toString(36); }
 function foodLib() { const l = loadJSON(FOOD_LIB_KEY); return { foods: (l && l.foods) || [], meals: (l && l.meals) || [] }; }
-function foodLibSave(l) { localStorage.setItem(FOOD_LIB_KEY, JSON.stringify(l)); }
+// Every library change goes through here: stamp what changed (the newer copy
+// wins when syncing), remember deletions, and back up.
+function foodLibSave(l) {
+  const old = foodLib(), now = Date.now();
+  const strip = function(x){ return JSON.stringify(Object.assign({}, x, { at: 0 })); };
+  [['foods', 'ff:'], ['meals', 'fm:']].forEach(function(k) {
+    l[k[0]].forEach(function(x) {
+      const o = old[k[0]].find(function(y){ return y.id === x.id; });
+      if (!o || strip(o) !== strip(x)) x.at = now;
+    });
+    old[k[0]].forEach(function(o){ if (!l[k[0]].some(function(x){ return x.id === o.id; })) bkForget(k[1] + o.id); });
+  });
+  localStorage.setItem(FOOD_LIB_KEY, JSON.stringify(l));
+  bkSoon();
+}
 function foodLog() { return loadJSON(FOOD_LOG_KEY) || []; }
-function foodLogSave(l) { localStorage.setItem(FOOD_LOG_KEY, JSON.stringify(l)); }
+function foodLogSave(l) {
+  const ids = {};
+  l.forEach(function(e){ ids[e.id] = 1; });
+  foodLog().forEach(function(e){ if (!ids[e.id]) bkForget('fe:' + e.id); });
+  localStorage.setItem(FOOD_LOG_KEY, JSON.stringify(l));
+  bkSoon();
+}
 function foodTargets() { return loadJSON(FOOD_TARGET_KEY) || {}; }
 function foodById(id, lib) { return (lib || foodLib()).foods.find(function(f){ return f.id === id; }); }
 function mealById(id, lib) { return (lib || foodLib()).meals.find(function(m){ return m.id === id; }); }
@@ -3673,7 +3696,9 @@ function foodSaveTargets() {
   if (v('tg-p') > 0) t.protein = v('tg-p');
   if (v('tg-c') > 0) t.carbs = v('tg-c');
   if (v('tg-f') > 0) t.fat = v('tg-f');
+  t.at = Date.now();
   localStorage.setItem(FOOD_TARGET_KEY, JSON.stringify(t));
+  bkSoon();
   toast('Targets saved');
   render();
 }
@@ -3905,12 +3930,14 @@ function bkForget(key) {   // record a deletion on this phone
 function bkUnforget(key) { localStorage.setItem(BK_DELETED_KEY, JSON.stringify(bkDeleted().filter(function(k){ return k !== key; }))); }
 function bkParse(rec) {
   const L = rec && rec.fields && rec.fields.Log;
-  if (!L || !/"(rs|run|body)"/.test(L)) return null;
+  if (!L || !/"(rs|run|body|food|foodlib)"/.test(L)) return null;
   try {
     const o = JSON.parse(L);
     if (o && o.rs && o.rs.id) return { kind: 'rs', log: o.rs, recId: rec.id };
     if (o && o.run && o.run.id) return { kind: 'run', log: o.run, recId: rec.id };
     if (o && o.body) return { kind: 'body', body: o.body, recId: rec.id };
+    if (o && o.food && o.food.date) return { kind: 'food', food: o.food, recId: rec.id };
+    if (o && o.foodlib) return { kind: 'foodlib', foodlib: o.foodlib, recId: rec.id };
   } catch (e) {}
   return null;
 }
@@ -3993,8 +4020,95 @@ async function bkSync(remote) {
       for (const r of bodies.slice(1)) await writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true);
     } else await writeThrough('/sessions', 'POST', { records: [{ fields: fields }] }, true);
   }
+  restored += await bkFoodSync(parsed, deleted);
   localStorage.setItem(BK_LAST_KEY, new Date().toISOString());
   if (restored) toast('Restored ' + restored + ' item' + (restored === 1 ? '' : 's') + ' from Airtable');
+  return restored;
+}
+// ── food in Airtable ────────────────────────────────────────
+// One Sessions record per day of food (Log = {"food": {date, entries}}) –
+// a single record would hit Airtable's 100,000-character limit – and one
+// for the library and targets (Log = {"foodlib": {foods, meals, targets}}).
+// Entries are never edited, only added or deleted, so a day merges as the
+// union of both sides minus deletions. Foods and meals carry an `at` stamp
+// set whenever they're saved; the newer copy wins. Targets likewise.
+function byIdStr(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }
+function foodLibTouched(lib, t, deleted) {
+  return lib.foods.concat(lib.meals).some(function(x){ return x.at; }) || !!t.at ||
+    deleted.some(function(k){ return k.indexOf('ff:') === 0 || k.indexOf('fm:') === 0; });
+}
+async function bkFoodSync(parsed, deleted) {
+  let restored = 0;
+  // Deletions travel in the records ("deleted" lists) so every device learns them.
+  const forget = function(key){ if (deleted.indexOf(key) < 0) { deleted.push(key); bkForget(key); } };
+  const isDel = function(e){ return deleted.indexOf('fe:' + e.id) >= 0; };
+  // days
+  const remoteDays = {};
+  parsed.filter(function(r){ return r.kind === 'food'; }).forEach(function(r) {
+    const d = r.food.date, es = r.food.entries || [], del = r.food.deleted || [];
+    if (remoteDays[d]) { remoteDays[d].extra.push(r.recId); remoteDays[d].entries = remoteDays[d].entries.concat(es); remoteDays[d].del = remoteDays[d].del.concat(del); }
+    else remoteDays[d] = { recId: r.recId, raw: es, rawDel: del, entries: es.slice(), del: del.slice(), extra: [] };
+  });
+  Object.keys(remoteDays).forEach(function(d){ remoteDays[d].del.forEach(function(id){ forget('fe:' + id); }); });
+  let log = foodLog();
+  const before = log.length;
+  log = log.filter(function(e){ return !isDel(e); });
+  if (log.length !== before) { localStorage.setItem(FOOD_LOG_KEY, JSON.stringify(log)); restored += before - log.length; }
+  const byDate = {};
+  log.forEach(function(e){ (byDate[e.date] = byDate[e.date] || []).push(e); });
+  const dates = Object.keys(byDate).concat(Object.keys(remoteDays).filter(function(d){ return !byDate[d]; }));
+  const added = [];
+  for (const d of dates) {
+    const rd = remoteDays[d], local = byDate[d] || [], have = {};
+    local.forEach(function(e){ have[e.id] = 1; });
+    (rd ? rd.entries : []).forEach(function(e){ if (!have[e.id] && !isDel(e)) { have[e.id] = 1; added.push(e); local.push(e); } });
+    const merged = local.slice().sort(byIdStr);
+    // tombstones: ids Airtable already lists as deleted, plus ids it still has that were deleted here
+    const del = rd ? rd.del.concat(rd.entries.filter(isDel).map(function(e){ return e.id; })).filter(function(id, i, a){ return a.indexOf(id) === i; }).sort() : [];
+    const fields = { Date: d, WorkoutName: 'Food · ' + fmtDay(d), Log: JSON.stringify({ food: { date: d, entries: merged, deleted: del } }) };
+    if (rd) {
+      if (rd.extra.length || JSON.stringify(rd.raw.slice().sort(byIdStr)) !== JSON.stringify(merged) || JSON.stringify(rd.rawDel.slice().sort()) !== JSON.stringify(del)) await writeThrough('/sessions', 'PATCH', { records: [{ id: rd.recId, fields: fields }] }, true);
+      for (const id of rd.extra) await writeThrough('/sessions?records[]=' + id, 'DELETE', null, true);
+    } else if (merged.length) await writeThrough('/sessions', 'POST', { records: [{ fields: fields }] }, true);
+  }
+  if (added.length) { localStorage.setItem(FOOD_LOG_KEY, JSON.stringify(log.concat(added))); restored += added.length; }
+
+  // library + targets
+  const libs = parsed.filter(function(r){ return r.kind === 'foodlib'; });
+  const rlib = libs.length ? libs[0].foodlib : null;
+  (rlib && rlib.deleted || []).forEach(forget);
+  const lib = foodLib(), t = foodTargets();
+  let changed = false;
+  ['foods', 'meals'].forEach(function(k) {
+    const n = lib[k].length, pre = k === 'foods' ? 'ff:' : 'fm:';
+    lib[k] = lib[k].filter(function(x){ return deleted.indexOf(pre + x.id) < 0; });
+    if (lib[k].length !== n) changed = true;
+  });
+  if (rlib) {
+    const merge = function(local, remote, prefix) {
+      (remote || []).forEach(function(r) {
+        if (deleted.indexOf(prefix + r.id) >= 0) return;
+        const i = local.findIndex(function(x){ return x.id === r.id; });
+        if (i < 0) { local.push(r); changed = true; }
+        else if ((r.at || 0) > (local[i].at || 0)) { local[i] = r; changed = true; }
+      });
+    };
+    merge(lib.foods, rlib.foods, 'ff:');
+    merge(lib.meals, rlib.meals, 'fm:');
+    if (rlib.targets && (rlib.targets.at || 0) > (t.at || 0)) { localStorage.setItem(FOOD_TARGET_KEY, JSON.stringify(rlib.targets)); restored++; }
+  }
+  if (changed) { localStorage.setItem(FOOD_LIB_KEY, JSON.stringify(lib)); restored++; }
+  const libDel = deleted.filter(function(k){ return k.indexOf('ff:') === 0 || k.indexOf('fm:') === 0; }).sort();
+  const payload = { foods: lib.foods, meals: lib.meals, targets: foodTargets(), deleted: libDel };
+  // the starting library alone isn't worth a record until something is changed
+  if (rlib || foodLibTouched(lib, payload.targets, deleted)) {
+    const fields = { Date: todayKey(), WorkoutName: 'Food library & targets', Log: JSON.stringify({ foodlib: payload }) };
+    if (!rlib) await writeThrough('/sessions', 'POST', { records: [{ fields: fields }] }, true);
+    else if (libs.length > 1 || JSON.stringify(rlib) !== JSON.stringify(payload)) {
+      await writeThrough('/sessions', 'PATCH', { records: [{ id: libs[0].recId, fields: fields }] }, true);
+      for (const r of libs.slice(1)) await writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true);
+    }
+  }
   return restored;
 }
 // after any save or delete: sync in the background
@@ -4002,7 +4116,9 @@ function bkSoon() { setTimeout(function(){ rpSync(); }, 0); }
 function bkStatus() {
   const n = rsLogs().length + runLogs().length, last = localStorage.getItem(BK_LAST_KEY);
   const pending = (loadJSON(BK_SENT_KEY) || []).length + JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]').length;
-  return n + ' gym session' + (n === 1 ? '' : 's') + ' and runs on this phone' + (pending ? ' · ' + pending + ' waiting to upload' : '') +
+  const days = {}; foodLog().forEach(function(e){ days[e.date] = 1; });
+  const fd = Object.keys(days).length;
+  return n + ' gym session' + (n === 1 ? '' : 's') + ' and runs, ' + fd + ' day' + (fd === 1 ? '' : 's') + ' of food on this phone' + (pending ? ' · ' + pending + ' waiting to upload' : '') +
     (last ? ' · checked ' + new Date(last).toLocaleString('en-AU', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ' · not backed up yet');
 }
 // Ask the browser to keep this site's storage instead of clearing it when
