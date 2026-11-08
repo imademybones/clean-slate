@@ -296,6 +296,7 @@ input:focus,select:focus,textarea:focus { outline:none; border-color:var(--accen
 .wk-detail { font-size:12px; color:var(--muted2); margin-top:2px; line-height:1.4; }
 .wk-status { font-size:11px; color:var(--muted); flex-shrink:0; text-align:right; }
 .wk-spacer { width:33px; flex-shrink:0; }
+.wk-logit { color:var(--accent); line-height:1.35; }
 .effort-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
 .effort-grid .fb-opt { padding:10px 0; }
 textarea { resize:vertical; }
@@ -431,6 +432,10 @@ textarea { resize:vertical; }
 //     meals (seeded with the usual breakfast), one-tap meal logging,
 //     portions, quick add, daily kcal/macro targets, 7-day average. Local only for
 //     now (included in the JSON export). Days ahead can be planned too.
+//     Gym sessions, runs, weigh-ins, benchmarks and plan position back up
+//     to Airtable (Sessions) and restore onto a phone that lost them; the
+//     app asks Chrome to keep its data; a missed day in the week view can
+//     be logged after the fact; gym sessions are dated by the day they're for.
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
 const CACHE_KEY = 'cleanslate_v3_cache';
@@ -1077,7 +1082,7 @@ async function loadHistory() {
 }
 
 function vHistory() {
-  const sess = (DB.sessions || []).filter(function(r){ return !rpParseRemote(r); }).concat(rpHistoryRecords()).concat(rsHistoryRecords()).concat(runHistoryRecords()).sort(function(a,b){ return (b.fields.Date||'').localeCompare(a.fields.Date||''); });
+  const sess = (DB.sessions || []).filter(function(r){ return !rpParseRemote(r) && !bkParse(r); }).concat(rpHistoryRecords()).concat(rsHistoryRecords()).concat(runHistoryRecords()).sort(function(a,b){ return (b.fields.Date||'').localeCompare(a.fields.Date||''); });
   if (!sess.length) return '<div class="top-bar"><div class="top-label">History</div></div>' +
     '<div class="empty-note">No sessions yet.<br>Your first completed workout will land here.</div>';
 
@@ -1163,8 +1168,10 @@ function vManage() {
     '<div class="section-head" style="margin-top:26px">Backup</div>' + backupHtml() +
     '<div class="section-head" style="margin-top:26px">Data</div>' +
     '<button class="add-btn" onclick="hardRefresh()">↻ Refresh from Airtable</button>' +
-    '<button class="add-btn" onclick="rpSyncNow()">⇅ Back up RP sessions now</button>' +
-    '<div class="rp-line" id="rp-sync-status" style="text-align:center">' + rpSyncStatus() + '</div>' +
+    '<button class="add-btn" onclick="rpSyncNow()">⇅ Back up to Airtable now</button>' +
+    '<div class="rp-line" id="bk-sync-status" style="text-align:center">' + bkStatus() + '</div>' +
+    '<div class="rp-line" id="rp-sync-status" style="text-align:center;margin-top:2px">' + rpSyncStatus() + '</div>' +
+    '<div class="rp-line" id="persist-status" style="text-align:center;margin-top:2px">' + persistLabel() + '</div>' +
     '<div class="section-head" style="margin-top:26px">Sync key</div>' +
     (authFailed ? '<div class="rp-line" style="color:var(--danger);margin:0 0 10px">Airtable refused the request – check the key matches the Worker\'s SYNC_KEY.</div>' : '') +
     '<div style="display:flex;gap:8px"><input id="sync-key" type="password" autocomplete="off" placeholder="' + (syncKey() ? 'Key saved on this device' : 'Paste your sync key') + '">' +
@@ -2248,19 +2255,22 @@ async function rpSync(loud) {
       toast('Restored ' + missing.length + ' RP session' + (missing.length === 1 ? '' : 's') + ' from Airtable');
     }
     rpMarkSynced(remoteIds);
+    const bkRestored = await bkSync(remote);
     // upload closed local logs Airtable doesn't have
     const synced = rpSynced();
     const toSend = logs.filter(function(l){ return remoteIds.indexOf(l.id) < 0 && synced.indexOf(l.id) < 0 && l.id !== RP.pendingFeedback; });
     for (const l of toSend) await rpBackupLog(l);
     if (loud) toast(toSend.length ? 'Backed up ' + toSend.length + ' session' + (toSend.length === 1 ? '' : 's') + ' ✓' : 'RP sessions already backed up ✓');
     localStorage.setItem('cleanslate_rp_lastsync', new Date().toISOString());
-    if ((missing.length || pulled) && (view === 'home' || view === 'history' || view === 'manage')) render();
+    if ((missing.length || pulled || bkRestored) && (view === 'home' || view === 'history' || view === 'manage' || view === 'week' || view === 'progress')) render();
   } catch (e) {
     if (loud) toast('Offline – backup will run when you\'re back online');
   } finally {
     rpSyncing = false;
     const st = document.getElementById('rp-sync-status');
     if (st) st.textContent = rpSyncStatus();
+    const bs = document.getElementById('bk-sync-status');
+    if (bs) bs.textContent = bkStatus();
   }
 }
 function rpSyncNow() { rpSync(true); }
@@ -2612,6 +2622,7 @@ function runDecide(repeat) {
   st.decisions[o.ws] = repeat ? 'repeat' : 'carry';
   if (repeat && st.repeats.indexOf(o.ws) < 0) st.repeats.push(o.ws);
   runStateSave(st);
+  bkSoon();
   toast(repeat ? 'Repeating week ' + o.week + ' – checkpoints move back a week' : 'On to week ' + planWeekFor(o.ws));
   render();
 }
@@ -2730,14 +2741,15 @@ function vWeek() {
     else if (s.info.kind === 'run') detail = s.planWeek < 1 ? 'Plan not started' : s.run ? runDesc(s.run.session) : 'Phase 1 complete';
     else detail = 'Full rest';
     const canSwap = isCur && s.date >= today && !s.log && !(rsLive && rsLive.slot === s.slot) && !(runLive && runLive.slot === s.slot);
-    const startable = isCur && s.info.kind !== 'rest' && !s.log && !(s.info.kind === 'run' && !s.run);
+    const past = s.date < today;
+    const startable = (isCur || past) && s.info.kind !== 'rest' && !s.log && !(s.info.kind === 'run' && !s.run);
     const col = s.info.kind === 'run' ? 'var(--cardio)' : s.info.kind === 'gym' ? 'var(--accent)' : 'var(--muted)';
     return '<div class="wk-row' + (s.date === today ? ' is-today' : '') + (cp ? ' is-cp' : '') + ' st-' + s.status + '" style="--wc:' + (cp ? 'var(--cp)' : col) + '">' +
       '<div class="wk-day"><div class="wk-dn">' + name + '</div><div class="wk-dd">' + parseInt(s.date.slice(8), 10) + '</div></div>' +
-      '<div class="wk-main"' + (startable ? ' onclick="weekOpen(' + i + ')" style="cursor:pointer"' : '') + '>' +
+      '<div class="wk-main"' + (startable ? ' onclick="weekOpen(' + i + ',' + off + ')" style="cursor:pointer"' : '') + '>' +
       '<div class="wk-slot">' + esc(s.info.label) + (cp ? ' <span class="cp-text">★ Checkpoint</span>' : '') + '</div>' +
       '<div class="wk-detail">' + esc(detail) + (cp ? ' · ' + esc(cp.label) : '') + '</div></div>' +
-      '<div class="wk-status">' + STATUS_LABEL[s.status] + '</div>' +
+      '<div class="wk-status">' + (startable && past ? 'Missed<br><span class="wk-logit">+ Log it</span>' : STATUS_LABEL[s.status]) + '</div>' +
       (canSwap ? '<button class="icon-btn' + (swapArmedSlot === i ? ' is-armed' : '') + '" onclick="weekSwapTap(' + i + ')" aria-label="Swap">⇄</button>' : '<span class="wk-spacer"></span>') +
       '</div>';
   }).join('');
@@ -2760,14 +2772,24 @@ function weekSwapTap(i) {
   slots[a] = slots[i]; slots[i] = t;
   st.swaps[ws] = slots;
   runStateSave(st);
+  bkSoon();
   swapArmedSlot = null;
   toast(SLOT_INFO[slots[i]].label + ' ⇄ ' + SLOT_INFO[slots[a]].label);
   render();
 }
-function weekOpen(i) {
-  const ws = mondayOf(todayKey()), slot = weekSlots(ws)[i], info = SLOT_INFO[slot];
-  if (info.kind === 'gym') rsStart(info.session, slot);
-  else if (info.kind === 'run') nav('runTimer', { slot: slot });
+function weekOpen(i, off) {
+  const today = todayKey(), ws = addDays(mondayOf(today), 7 * (off || 0)), d = dayStatus(ws, i), info = d.info;
+  if (d.date < today) {   // a past day: log it after the fact, dated that day
+    if (info.kind === 'gym') rsStart(info.session, d.slot, d.date);
+    else if (info.kind === 'run' && d.run) {
+      runDraft = { date: d.date, slot: d.slot, planWeek: d.planWeek, session: d.run.session, checkpoint: d.run.checkpoint ? d.run.checkpoint.kind : null,
+        completed: 'yes', duration: '', distance: '', effort: null, calves: null, notes: '', benchTime: '' };
+      nav('runLog');
+    }
+    return;
+  }
+  if (info.kind === 'gym') rsStart(info.session, d.slot);
+  else if (info.kind === 'run') nav('runTimer', { slot: d.slot });
 }
 
 // ═══ GYM SESSION ═══════════════════════════════════════════
@@ -2838,15 +2860,16 @@ function rsNewSets(e, logs, n) {
   for (let i = 0; i < n; i++) sets.push({ weight: sug.weight == null ? '' : String(sug.weight), reps: '', sec: e.hold ? String(sug.target) : '', rir: '', done: false });
   return sets;
 }
-function rsStart(session, slot) {
+function rsStart(session, slot, date) {
   if (runLive) { toast('Finish or discard the run in progress first'); return; }
-  if (rsLive && rsLive.session !== session) {
-    if (!confirm('Gym ' + rsLive.session + ' is in progress. Discard it and start Gym ' + session + '?')) return;
+  const forDate = date || todayKey();
+  if (rsLive && (rsLive.session !== session || (date && rsLive.date !== date))) {
+    if (!confirm('Gym ' + rsLive.session + (rsLive.date !== todayKey() ? ' for ' + fmtDay(rsLive.date) : '') + ' is in progress. Discard it and start Gym ' + session + (forDate !== todayKey() ? ' for ' + fmtDay(forDate) : '') + '?')) return;
     rsLive = null;
   }
   if (!rsLive) {
     const logs = rsLogs();
-    rsLive = { phase: RS.phase, session: session, slot: slot || ('gym' + session), date: todayKey(), startedAt: new Date().toISOString(), ex: {} };
+    rsLive = { phase: RS.phase, session: session, slot: slot || ('gym' + session), date: forDate, startedAt: new Date().toISOString(), ex: {} };
     rsSessionDef(session).exercises.forEach(function(ex) {
       const variant = ex.variants ? (RS.variants[ex.id] || ex.variants[0].id) : null;
       rsLive.ex[ex.id] = { variant: variant, skipped: false, sets: rsNewSets(rsEff(ex, variant), logs, ex.sets) };
@@ -2863,6 +2886,7 @@ function vRSSession() {
     '<div class="top-label" style="color:var(--accent)">Gym ' + rsLive.session + '</div>' +
     '<div class="top-action" style="color:var(--muted2)" onclick="rsDiscard()">Discard</div></div>' +
     '<div class="pad" style="margin-bottom:12px;font-size:13px;color:var(--muted2)">' + esc(def.name) + ' · ' + esc(RS_PROGRAM.name) + '</div>' +
+    (rsLive.date !== todayKey() ? '<div class="rp-tip" style="color:var(--cp);border-color:rgba(255,179,71,.3);background:rgba(255,179,71,.05)">Logging this session for <b>' + fmtDay(rsLive.date) + '</b>. Tick the sets you did, then Finish.</div>' : '') +
     '<div class="rp-tip">Lower body: log RIR every set and stop with 2+ reps in reserve – never to failure.</div>' +
     '<div class="ex-wrap">' + def.exercises.map(function(ex){ return rsExCard(ex, logs); }).join('') + '</div>' +
     '<div style="height:150px"></div>' +
@@ -3027,11 +3051,13 @@ function rsFinish() {
       sets.push(out);
     });
   });
-  const log = { id: Date.now(), date: todayKey(), program: RS_ID, phase: rsLive.phase, session: rsLive.session, slot: rsLive.slot,
+  // dated by the day the session was for (started, or picked in the week view), not the day Finish was tapped
+  const log = { id: Date.now(), date: rsLive.date || todayKey(), program: RS_ID, phase: rsLive.phase, session: rsLive.session, slot: rsLive.slot,
     startedAt: rsLive.startedAt, finishedAt: new Date().toISOString(), sets: sets, skipped: skipped };
-  const logs = before.concat([log]);
+  const logs = before.concat([log]).sort(byDateId);
   localStorage.setItem(RS_LOGS_KEY, JSON.stringify(logs));
   rsLive = null; rsLiveSave();
+  bkSoon();
   rsShowDone(log, logs);
 }
 function rsShowDone(log, logs) {
@@ -3081,6 +3107,7 @@ function rsHistBody(l) {
 function rsDeleteLog(id) {
   if (!confirm('Delete this gym session? Its sets stop counting towards suggestions.')) return;
   localStorage.setItem(RS_LOGS_KEY, JSON.stringify(rsLogs().filter(function(l){ return l.id !== id; })));
+  bkForget('rs:' + id); bkSoon();
   toast('Session deleted');
   render();
 }
@@ -3336,6 +3363,7 @@ function runSaveLog() {
   }
   benchSave(b);
   runDraft = null;
+  bkSoon();
   toast('Run logged ✓' + benchNote);
   nav('home');
 }
@@ -3361,7 +3389,9 @@ function runEditLog(id) {
 function runDeleteLog(id) {
   if (!confirm('Delete this run?')) return;
   runLogsSave(runLogs().filter(function(l){ return l.id !== id; }));
+  benchmarks().filter(function(b){ return b.runId === id; }).forEach(function(b){ bkForget('b:' + b.id); });
   benchSave(benchmarks().filter(function(b){ return b.runId !== id; }));
+  bkForget('run:' + id); bkSoon();
   toast('Run deleted');
   render();
 }
@@ -3423,12 +3453,14 @@ function benchAdd() {
   b.push({ id: Date.now(), date: document.getElementById('bm-date').value || todayKey(), kind: dist === 5000 ? 'parkrun' : 'manual',
     label: document.getElementById('bm-label').value.trim() || fmtDist(dist) + ' effort', distanceM: dist, timeSec: t });
   benchSave(b);
+  bkSoon();
   toast('Benchmark saved');
   render();
 }
 function benchDelete(id) {
   if (!confirm('Delete this benchmark?')) return;
   benchSave(benchmarks().filter(function(b){ return b.id !== id; }));
+  bkForget('b:' + id); bkSoon();
   render();
 }
 // trailing 7-day average at each weigh-in
@@ -3469,10 +3501,12 @@ function weightAdd() {
   const ws = weighIns().filter(function(w){ return w.date !== date; });
   ws.push({ date: date, kg: round2(kg) });
   localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws));
+  bkUnforget('w:' + date); bkSoon();
   render();
 }
 function weightDelete(date) {
   localStorage.setItem(WEIGHT_KEY, JSON.stringify(weighIns().filter(function(w){ return w.date !== date; })));
+  bkForget('w:' + date); bkSoon();
   render();
 }
 
@@ -3814,6 +3848,144 @@ function mealEditDelete() {
   nav('foodLib');
 }
 
+// ═══ RUN-STRENGTH AIRTABLE BACKUP ══════════════════════════
+// Gym sessions, runs, weigh-ins and benchmarks used to live only on the
+// phone, so clearing the browser's site data lost them for good. Now they go
+// to the Sessions table too, alongside the RP backups:
+//   gym session → Kind "lift",   Log = {"rs": <log>}
+//   run         → Kind "cardio", Log = {"run": <log>}
+//   one record  → no Kind,       Log = {"body": {weights, benchmarks, runState, rsState}}
+// Every sync (app start, coming back online, after each save) merges both
+// ways: anything only Airtable has is restored, anything only this phone has
+// is uploaded, and a log that differs is pushed from the phone. Deletions are
+// remembered (cleanslate_bk_deleted) so a deleted item isn't restored.
+const BK_DELETED_KEY = 'cleanslate_bk_deleted';
+const BK_SENT_KEY = 'cleanslate_bk_sent';
+const BK_LAST_KEY = 'cleanslate_bk_lastsync';
+function bkDeleted() { return loadJSON(BK_DELETED_KEY) || []; }
+function bkForget(key) {   // record a deletion on this phone
+  const d = bkDeleted();
+  if (d.indexOf(key) < 0) { d.push(key); localStorage.setItem(BK_DELETED_KEY, JSON.stringify(d)); }
+}
+function bkUnforget(key) { localStorage.setItem(BK_DELETED_KEY, JSON.stringify(bkDeleted().filter(function(k){ return k !== key; }))); }
+function bkParse(rec) {
+  const L = rec && rec.fields && rec.fields.Log;
+  if (!L || !/"(rs|run|body)"/.test(L)) return null;
+  try {
+    const o = JSON.parse(L);
+    if (o && o.rs && o.rs.id) return { kind: 'rs', log: o.rs, recId: rec.id };
+    if (o && o.run && o.run.id) return { kind: 'run', log: o.run, recId: rec.id };
+    if (o && o.body) return { kind: 'body', body: o.body, recId: rec.id };
+  } catch (e) {}
+  return null;
+}
+function bkFields(kind, l) {
+  if (kind === 'rs') return { Date: l.date, WorkoutName: 'Gym ' + l.session + ' · ' + (RS_SESSION_NAMES[l.session] || ''), Kind: 'lift', Log: JSON.stringify({ rs: l }) };
+  return { Date: l.date, WorkoutName: (SLOT_INFO[l.slot] ? SLOT_INFO[l.slot].label : 'Run') + ' · Week ' + l.planWeek, Kind: 'cardio', Log: JSON.stringify({ run: l }) };
+}
+function byDateId(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id; }
+function bkRunStateIsDefault(st) {
+  return st.start === RUN_PLAN_START && !st.repeats.length && !Object.keys(st.decisions).length && !Object.keys(st.swaps).length;
+}
+async function bkSync(remote) {
+  const parsed = remote.map(bkParse).filter(Boolean);
+  const deleted = bkDeleted();
+  let sent = loadJSON(BK_SENT_KEY) || [], restored = 0;
+  const remoteKeys = [];
+  for (const kind of ['rs', 'run']) {
+    const key = function(id){ return kind + ':' + id; };
+    const storeKey = kind === 'rs' ? RS_LOGS_KEY : RUN_LOGS_KEY;
+    const all = parsed.filter(function(r){ return r.kind === kind; });
+    // deleted on this phone: remove the Airtable copy too
+    for (const r of all.filter(function(r){ return deleted.indexOf(key(r.log.id)) >= 0; })) {
+      await writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true);
+    }
+    const rem = [], seen = {};
+    all.forEach(function(r) {
+      if (deleted.indexOf(key(r.log.id)) >= 0) return;
+      if (seen[r.log.id]) { writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true); return; }   // duplicate upload
+      seen[r.log.id] = 1; rem.push(r); remoteKeys.push(key(r.log.id));
+    });
+    let local = loadJSON(storeKey) || [];
+    const localIds = local.map(function(l){ return l.id; });
+    const missing = rem.filter(function(r){ return localIds.indexOf(r.log.id) < 0; });
+    if (missing.length) {
+      local = local.concat(missing.map(function(r){ return r.log; })).sort(byDateId);
+      localStorage.setItem(storeKey, JSON.stringify(local));
+      restored += missing.length;
+    }
+    for (const r of rem) {
+      const l = local.find(function(x){ return x.id === r.log.id; });
+      if (l && JSON.stringify(l) !== JSON.stringify(r.log)) await writeThrough('/sessions', 'PATCH', { records: [{ id: r.recId, fields: bkFields(kind, l) }] }, true);
+    }
+    const toSend = local.filter(function(l){ return !seen[l.id] && sent.indexOf(key(l.id)) < 0; });
+    for (const l of toSend) {
+      sent.push(key(l.id));
+      localStorage.setItem(BK_SENT_KEY, JSON.stringify(sent));
+      await writeThrough('/sessions', 'POST', { records: [{ fields: bkFields(kind, l) }] }, true);
+    }
+  }
+  // sent markers only matter until Airtable lists the record
+  localStorage.setItem(BK_SENT_KEY, JSON.stringify(sent.filter(function(k){ return remoteKeys.indexOf(k) < 0; })));
+
+  // weigh-ins + benchmarks (+ plan position) in one record
+  const bodies = parsed.filter(function(r){ return r.kind === 'body'; });
+  const rb = { weights: [], benchmarks: [] };
+  bodies.forEach(function(r) {
+    rb.weights = rb.weights.concat(r.body.weights || []);
+    rb.benchmarks = rb.benchmarks.concat(r.body.benchmarks || []);
+    if (r.body.runState && !rb.runState) rb.runState = r.body.runState;
+    if (r.body.rsState && !rb.rsState) rb.rsState = r.body.rsState;
+  });
+  const ws = loadJSON(WEIGHT_KEY) || [], bs = benchmarks();
+  const wDates = ws.map(function(w){ return w.date; }), bIds = bs.map(function(b){ return b.id; });
+  const addW = [], addB = [];
+  rb.weights.forEach(function(w){ if (wDates.indexOf(w.date) < 0 && deleted.indexOf('w:' + w.date) < 0) { wDates.push(w.date); addW.push(w); } });
+  rb.benchmarks.forEach(function(b){ if (bIds.indexOf(b.id) < 0 && deleted.indexOf('b:' + b.id) < 0) { bIds.push(b.id); addB.push(b); } });
+  if (addW.length) localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws.concat(addW)));
+  if (addB.length) benchSave(bs.concat(addB));
+  restored += addW.length + addB.length;
+  // a phone with no plan history of its own takes Airtable's
+  if (rb.runState && bkRunStateIsDefault(runState())) { runStateSave(rb.runState); if (!bkRunStateIsDefault(runState())) restored++; }
+  if (rb.rsState && !localStorage.getItem(RS_STATE_KEY)) { RS = Object.assign(rsDefaultState(), rb.rsState); rsSave(); }
+  const body = { weights: weighIns(), benchmarks: benchmarks(), runState: runState(), rsState: loadJSON(RS_STATE_KEY) || undefined };
+  const same = bodies.length === 1 && JSON.stringify(bodies[0].body) === JSON.stringify(body);
+  const empty = !body.weights.length && !body.benchmarks.length && bkRunStateIsDefault(body.runState) && !body.rsState;
+  if (!same && !(empty && !bodies.length)) {
+    const fields = { Date: todayKey(), WorkoutName: 'Weigh-ins, benchmarks & plan', Log: JSON.stringify({ body: body }) };
+    if (bodies.length) {
+      await writeThrough('/sessions', 'PATCH', { records: [{ id: bodies[0].recId, fields: fields }] }, true);
+      for (const r of bodies.slice(1)) await writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true);
+    } else await writeThrough('/sessions', 'POST', { records: [{ fields: fields }] }, true);
+  }
+  localStorage.setItem(BK_LAST_KEY, new Date().toISOString());
+  if (restored) toast('Restored ' + restored + ' item' + (restored === 1 ? '' : 's') + ' from Airtable');
+  return restored;
+}
+// after any save or delete: sync in the background
+function bkSoon() { setTimeout(function(){ rpSync(); }, 0); }
+function bkStatus() {
+  const n = rsLogs().length + runLogs().length, last = localStorage.getItem(BK_LAST_KEY);
+  const pending = (loadJSON(BK_SENT_KEY) || []).length + JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]').length;
+  return n + ' gym session' + (n === 1 ? '' : 's') + ' and runs on this phone' + (pending ? ' · ' + pending + ' waiting to upload' : '') +
+    (last ? ' · checked ' + new Date(last).toLocaleString('en-AU', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ' · not backed up yet');
+}
+// Ask the browser to keep this site's storage instead of clearing it when
+// space runs low (Chrome grants this without a prompt for installed apps).
+let storagePersisted = null;
+function askPersist() {
+  try {
+    if (!navigator.storage || !navigator.storage.persist) return;
+    navigator.storage.persisted().then(function(p) { return p || navigator.storage.persist(); })
+      .then(function(p) { storagePersisted = !!p; const el = document.getElementById('persist-status'); if (el) el.textContent = persistLabel(); })
+      .catch(function(){});
+  } catch (e) {}
+}
+function persistLabel() {
+  return storagePersisted === true ? 'Chrome is keeping this app\'s data (protected from automatic clean-up).'
+    : storagePersisted === false ? 'Chrome may clear this app\'s data when space runs low – install it to the home screen to protect it. Airtable keeps a copy either way.' : '';
+}
+
 // ═══ BACKUP: JSON export / import ══════════════════════════
 // Every cleanslate_* / cs3_* key except the sync key (a secret) and the
 // one-off pre-migration copy. Import replaces this phone's data, then reloads
@@ -3857,7 +4029,7 @@ function importData(input) {
 }
 
 // ═══ INIT ══════════════════════════════════════════════════
-window.addEventListener('online', function(){ online = true; updateSyncDot(); flushQueue(); });
+window.addEventListener('online', function(){ online = true; updateSyncDot(); flushQueue().then(function(){ rpSync(); }); });
 window.addEventListener('offline', function(){ online = false; updateSyncDot(); });
 
 if ('serviceWorker' in navigator) {
@@ -3869,6 +4041,7 @@ if ('serviceWorker' in navigator) {
 }
 
 (async function init() {
+  askPersist();
   timerRestore();
   runRestore();
   const hadCache = cacheLoad();
