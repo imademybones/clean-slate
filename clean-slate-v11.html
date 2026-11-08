@@ -436,6 +436,7 @@ textarea { resize:vertical; }
 //     to Airtable (Sessions) and restore onto a phone that lost them; the
 //     app asks Chrome to keep its data; a missed day in the week view can
 //     be logged after the fact; gym sessions are dated by the day they're for.
+//     Manage → restart the run plan from a Monday, or undo repeated weeks.
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
 const CACHE_KEY = 'cleanslate_v3_cache';
@@ -3083,7 +3084,41 @@ function rsSettingsHtml() {
   return '<div class="section-head" style="margin-top:20px">Run-Strength settings</div>' +
     '<div class="form-field"><label class="form-label">Smallest dumbbell step (kg)</label><select onchange="RS.dbStep=parseFloat(this.value);rsSave();toast(\'Dumbbell step: \'+this.value+\' kg\')">' +
     steps.map(function(v){ return '<option value="' + v + '"' + (v === parseFloat(RS.dbStep) ? ' selected' : '') + '>' + v + ' kg</option>'; }).join('') + '</select></div>' +
-    '<div class="rp-line" style="margin:-6px 0 4px">Run plan started ' + fmtDay(runState().start) + (runState().repeats.length ? ' · ' + runState().repeats.length + ' week' + (runState().repeats.length === 1 ? '' : 's') + ' repeated' : '') + '.</div>';
+    runPlanSettingsHtml();
+}
+// ── run plan: restart from a Monday, or undo repeated weeks ──
+function runPlanSettingsHtml() {
+  const st = runState(), today = todayKey(), thisMon = mondayOf(today), nextMon = addDays(thisMon, 7);
+  const n = st.repeats.length;
+  const opt = function(d, label){ return '<option value="' + d + '">' + label + ' – ' + fmtDay(d) + '</option>'; };
+  return '<div class="rp-line" id="plan-line" style="margin:-6px 0 10px">Run plan ' + (st.start > today ? 'starts ' : 'started ') + fmtDay(st.start) +
+    (n ? ' · ' + n + ' week' + (n === 1 ? '' : 's') + ' repeated' : '') + '. Today is plan week ' + Math.max(0, planWeekFor(thisMon)) + '.</div>' +
+    (n ? '<button class="add-btn" style="margin:0 0 10px" onclick="runUndoRepeats()">↶ Undo repeated week' + (n === 1 ? '' : 's') + '</button>' : '') +
+    '<div style="display:flex;gap:8px;margin-bottom:6px"><select id="plan-restart" style="flex:1;min-width:0">' + opt(nextMon, 'Next Monday') + opt(thisMon, 'This Monday') + '</select>' +
+    '<button class="icon-btn" style="width:auto;padding:0 14px;height:auto" onclick="runRestartPlan(document.getElementById(\'plan-restart\').value)">Restart plan</button></div>' +
+    '<div class="rp-line" style="margin:0 0 4px">Restarting puts week 1 on that Monday and clears repeated weeks. Logged runs and gym sessions are kept.</div>';
+}
+function runRestartPlan(ws) {
+  if (!ws || !confirm('Restart the run plan so week 1 starts ' + fmtDay(ws) + '? Repeated weeks are cleared; your logs stay.')) return;
+  const st = runState();
+  st.start = ws;
+  st.repeats = [];
+  st.decisions = {};
+  Object.keys(st.swaps).forEach(function(k){ if (k < ws) delete st.swaps[k]; });
+  runStateSave(st);
+  bkSoon();
+  toast('Run plan restarts ' + fmtDay(ws) + ' – week 1');
+  render();
+}
+function runUndoRepeats() {
+  const st = runState();
+  if (!st.repeats.length || !confirm('Undo the repeated week' + (st.repeats.length === 1 ? '' : 's') + '? The plan moves forward again and checkpoints come back a week.')) return;
+  st.repeats.forEach(function(ws){ st.decisions[ws] = 'carry'; });   // don't ask about those weeks again
+  st.repeats = [];
+  runStateSave(st);
+  bkSoon();
+  toast('Repeated week undone');
+  render();
 }
 
 // ── gym history ────────────────────────────────────────────
