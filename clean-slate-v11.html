@@ -352,6 +352,7 @@ textarea { resize:vertical; }
 .fbar-fill.over { background:var(--cp); }
 .food-datebar { display:flex; align-items:center; gap:10px; margin:-6px 0 14px; }
 .fd-label { flex:1; text-align:center; font-size:14px; font-weight:400; }
+.fd-today { display:block; margin:0 auto; padding:2px 0 0; font-size:11px; }
 .food-sum { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:16px; margin-bottom:12px; }
 .fs-top { display:flex; justify-content:space-between; gap:12px; }
 .fs-big { font-family:'Bebas Neue',sans-serif; font-size:44px; line-height:.95; color:var(--accent); }
@@ -429,7 +430,7 @@ textarea { resize:vertical; }
 // v11: Food tab – calorie + protein tracker. Library of foods and saved
 //     meals (seeded with the usual breakfast), one-tap meal logging,
 //     portions, quick add, daily kcal/macro targets, 7-day average. Local only for
-//     now (included in the JSON export).
+//     now (included in the JSON export). Days ahead can be planned too.
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
 const CACHE_KEY = 'cleanslate_v3_cache';
@@ -3585,8 +3586,9 @@ function vFood() {
 
   return '<div class="top-bar"><div class="top-label">Food</div><div class="top-action" onclick="nav(\'foodLib\')">My foods</div></div><div class="pad">' +
     '<div class="food-datebar"><button class="icon-btn" onclick="nav(\'food\',{date:\'' + addDays(date, -1) + '\'})" aria-label="Previous day">‹</button>' +
-    '<div class="fd-label">' + (date === today ? 'Today' : date === addDays(today, -1) ? 'Yesterday' : fmtDay(date)) + '</div>' +
-    '<button class="icon-btn" onclick="nav(\'food\',{date:\'' + addDays(date, 1) + '\'})" aria-label="Next day"' + (date >= today ? ' disabled style="opacity:.3"' : '') + '>›</button></div>' +
+    '<div class="fd-label">' + (date === today ? 'Today' : date === addDays(today, -1) ? 'Yesterday' : date === addDays(today, 1) ? 'Tomorrow' : fmtDay(date)) +
+    (date !== today ? '<button class="rp-link accent fd-today" onclick="nav(\'food\')">Back to today</button>' : '') + '</div>' +
+    '<button class="icon-btn" onclick="nav(\'food\',{date:\'' + addDays(date, 1) + '\'})" aria-label="Next day">›</button></div>' +
     summary + avgLine + slots +
     '<div class="section-head" style="margin-top:26px">Daily targets</div>' +
     '<div class="form-grid-2"><div class="form-field"><label class="form-label">Calories (kcal)</label><input id="tg-kcal" type="number" inputmode="numeric" min="0" value="' + (tg.kcal || '') + '" placeholder="e.g. 2200"></div>' +
