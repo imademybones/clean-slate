@@ -357,7 +357,7 @@ textarea { resize:vertical; }
 .fs-big { font-family:'Bebas Neue',sans-serif; font-size:44px; line-height:.95; color:var(--accent); }
 .fs-big.left { color:var(--text); } .fs-big.over { color:var(--cp); }
 .fs-lbl { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted2); margin-top:3px; }
-.fs-macros { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:10px; margin-top:14px; font-size:12px; color:var(--muted2); }
+.fs-macros { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:14px; font-size:12px; color:var(--muted2); }
 .fs-macros b { font-family:'Bebas Neue',sans-serif; font-size:21px; font-weight:400; color:var(--text); letter-spacing:.03em; }
 .fs-macros span { display:block; font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-top:1px; }
 .fs-macros .fbar { margin-top:5px; height:4px; }
@@ -428,7 +428,7 @@ textarea { resize:vertical; }
 //     versioned (cleanslate_schema) with migrations.
 // v11: Food tab – calorie + protein tracker. Library of foods and saved
 //     meals (seeded with the usual breakfast), one-tap meal logging,
-//     portions, quick add, daily targets, 7-day average. Local only for
+//     portions, quick add, daily kcal/macro targets, 7-day average. Local only for
 //     now (included in the JSON export).
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
@@ -1496,9 +1496,10 @@ const MIGRATIONS = {
     localStorage.setItem(RP_STATE_KEY, JSON.stringify(st));
     if (!loadJSON(RUN_STATE_KEY)) localStorage.setItem(RUN_STATE_KEY, JSON.stringify({ start: RUN_PLAN_START, repeats: [], decisions: {}, swaps: {} }));
   },
-  // v10 → v11: start the food library with the usual breakfast
+  // v10 → v11: start the food library with the usual breakfast, and the daily targets
   2: function() {
     if (!localStorage.getItem('cleanslate_food_lib')) localStorage.setItem('cleanslate_food_lib', JSON.stringify(foodSeed()));
+    if (!localStorage.getItem('cleanslate_food_targets')) localStorage.setItem('cleanslate_food_targets', JSON.stringify({ kcal: 2100, protein: 160, carbs: 230, fat: 60 }));
   }
 };
 function runMigrations() {
@@ -3559,7 +3560,8 @@ function vFood() {
     (left != null ? '<div style="text-align:right"><div class="fs-big' + (left < 0 ? ' over' : ' left') + '">' + Math.abs(left) + '</div><div class="fs-lbl">' + (left < 0 ? 'kcal over' : 'kcal left') + '</div></div>' : '') + '</div>' +
     foodBar(t.kcal, tg.kcal) +
     '<div class="fs-macros"><div><b>' + Math.round(t.p) + '</b>' + (tg.protein ? ' / ' + tg.protein : '') + ' g<span>Protein</span>' + foodBar(t.p, tg.protein) + '</div>' +
-    '<div><b>' + Math.round(t.c) + '</b> g<span>Carbs</span></div><div><b>' + Math.round(t.f) + '</b> g<span>Fat</span></div></div></div>';
+    '<div><b>' + Math.round(t.c) + '</b>' + (tg.carbs ? ' / ' + tg.carbs : '') + ' g<span>Carbs</span>' + foodBar(t.c, tg.carbs) + '</div>' +
+    '<div><b>' + Math.round(t.f) + '</b>' + (tg.fat ? ' / ' + tg.fat : '') + ' g<span>Fat</span>' + foodBar(t.f, tg.fat) + '</div></div></div>';
 
   const slots = FOOD_SLOTS.map(function(slot) {
     const es = day.filter(function(e){ return e.slot === slot; }), st = foodSum(es);
@@ -3588,14 +3590,18 @@ function vFood() {
     summary + avgLine + slots +
     '<div class="section-head" style="margin-top:26px">Daily targets</div>' +
     '<div class="form-grid-2"><div class="form-field"><label class="form-label">Calories (kcal)</label><input id="tg-kcal" type="number" inputmode="numeric" min="0" value="' + (tg.kcal || '') + '" placeholder="e.g. 2200"></div>' +
-    '<div class="form-field"><label class="form-label">Protein (g)</label><input id="tg-p" type="number" inputmode="numeric" min="0" value="' + (tg.protein || '') + '" placeholder="e.g. 160"></div></div>' +
+    '<div class="form-field"><label class="form-label">Protein (g)</label><input id="tg-p" type="number" inputmode="numeric" min="0" value="' + (tg.protein || '') + '" placeholder="e.g. 160"></div>' +
+    '<div class="form-field"><label class="form-label">Carbs (g)</label><input id="tg-c" type="number" inputmode="numeric" min="0" value="' + (tg.carbs || '') + '" placeholder="optional"></div>' +
+    '<div class="form-field"><label class="form-label">Fat (g)</label><input id="tg-f" type="number" inputmode="numeric" min="0" value="' + (tg.fat || '') + '" placeholder="optional"></div></div>' +
     '<button class="add-btn" style="margin-top:0" onclick="foodSaveTargets()">Save targets</button><div style="height:20px"></div></div>';
 }
 function foodSaveTargets() {
-  const k = parseInt(document.getElementById('tg-kcal').value, 10), p = parseInt(document.getElementById('tg-p').value, 10);
+  const v = function(id){ return parseInt(document.getElementById(id).value, 10); };
   const t = {};
-  if (k > 0) t.kcal = k;
-  if (p > 0) t.protein = p;
+  if (v('tg-kcal') > 0) t.kcal = v('tg-kcal');
+  if (v('tg-p') > 0) t.protein = v('tg-p');
+  if (v('tg-c') > 0) t.carbs = v('tg-c');
+  if (v('tg-f') > 0) t.fat = v('tg-f');
   localStorage.setItem(FOOD_TARGET_KEY, JSON.stringify(t));
   toast('Targets saved');
   render();

@@ -19,7 +19,8 @@ test('fresh install: schema 2, breakfast seeded, Home shows the food card', asyn
   const l = await lib();
   assert.equal(l.foods.length, 6);
   assert.equal(l.meals[0].name, 'Usual breakfast');
-  assert.match(await page.textContent('.food-home'), /0 kcal/);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.cleanslate_food_targets)), { kcal: 2100, protein: 160, carbs: 230, fat: 60 });
+  assert.match(await page.textContent('.food-home'), /0 \/ 2100 kcal/);
 });
 
 test('an existing v10 phone keeps its data and gets the seed once', async () => {
@@ -42,7 +43,9 @@ test('one tap logs the usual breakfast as six items, 676 kcal / 50 g protein', a
   assert.equal(l.length, 6);
   assert.ok(l.every((e) => e.slot === 'breakfast' && e.date === '2026-11-09'));
   assert.equal(await page.textContent('.fs-big'), '676');
-  assert.match(await page.textContent('.fs-macros'), /50 g/);
+  assert.match(await page.textContent('.fs-macros'), /50 \/ 160 g/);
+  assert.match(await page.textContent('.fs-macros'), /78 \/ 230 g/);
+  assert.match(await page.textContent('.fs-macros'), /17 \/ 60 g/);
 });
 
 test('remove an item, then add it back at half a portion from the add screen', async () => {
@@ -78,8 +81,9 @@ test('quick add, saved to My foods, then reusable', async () => {
 });
 
 test('targets drive the remaining figure and the Home card', async () => {
-  await page.fill('#tg-kcal', '2200'); await page.fill('#tg-p', '160');
+  await page.fill('#tg-kcal', '2200'); await page.fill('#tg-p', '160'); await page.fill('#tg-f', '');
   await page.click('text=Save targets');
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.cleanslate_food_targets)), { kcal: 2200, protein: 160, carbs: 230 });
   assert.match(await page.textContent('.food-sum'), /959\s*kcal left/);
   await page.click('[data-nav=home]');
   assert.match(await page.textContent('.food-home'), /1241 \/ 2200 kcal/);
