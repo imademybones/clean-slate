@@ -9,16 +9,22 @@ const { chromium } = require('playwright');
 const ROOT = path.join(__dirname, '..');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png' };
 
+// Serves the repo like GitHub Pages does: every file marked fresh for 10
+// minutes (Cache-Control: max-age=600). `overrides[relPath]` swaps a file's
+// contents, to stand in for a new deploy.
 function startServer() {
+  const overrides = {};
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, '') || 'index.html';
       const file = path.join(ROOT, rel);
+      const headers = { 'Content-Type': TYPES[path.extname(rel)] || 'application/octet-stream', 'Cache-Control': 'max-age=600' };
+      if (overrides[rel] != null) { res.writeHead(200, headers); return res.end(overrides[rel]); }
       if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end(); }
-      res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
+      res.writeHead(200, headers);
       fs.createReadStream(file).pipe(res);
     });
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: 'http://127.0.0.1:' + server.address().port }));
+    server.listen(0, '127.0.0.1', () => resolve({ server, overrides, url: 'http://127.0.0.1:' + server.address().port }));
   });
 }
 

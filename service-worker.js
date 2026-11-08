@@ -2,7 +2,7 @@
 // Caches only same-origin shell assets. Airtable / Cloudflare Worker requests
 // always go straight to the network and are never cached.
 // Bump CACHE_NAME on every future deploy so old caches are cleared automatically.
-const CACHE_NAME = 'gym-tracker-shell-v8';
+const CACHE_NAME = 'gym-tracker-shell-v9';
 
 const SHELL_ASSETS = [
   './',
@@ -41,8 +41,13 @@ self.addEventListener('fetch', (event) => {
   // is left completely alone — never intercepted, never cached.
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
 
+  // cache: 'no-cache' makes the browser check with the server every time
+  // (a quick 304 when nothing changed). Without it, the HTTP cache keeps
+  // handing back the copy GitHub Pages marked fresh for 10 minutes, so a new
+  // deploy didn't reach the installed app however often it was reopened.
+  const fresh = new Request(event.request.url, { cache: 'no-cache', credentials: 'same-origin' });
   event.respondWith(
-    fetch(event.request)
+    fetch(fresh)
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
