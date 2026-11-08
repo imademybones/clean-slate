@@ -2,7 +2,7 @@
 // Caches only same-origin shell assets. Airtable / Cloudflare Worker requests
 // always go straight to the network and are never cached.
 // Bump CACHE_NAME on every future deploy so old caches are cleared automatically.
-const CACHE_NAME = 'gym-tracker-shell-v9';
+const CACHE_NAME = 'gym-tracker-shell-v10';
 
 const SHELL_ASSETS = [
   './',
