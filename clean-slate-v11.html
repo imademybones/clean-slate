@@ -378,6 +378,9 @@ textarea { resize:vertical; }
 .pick-plus { width:28px; height:28px; border-radius:50%; border:1px solid var(--border2); color:var(--accent); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; }
 .fslot-btns { display:flex; align-items:center; gap:12px; }
 .fslot-btns .add-btn { flex:1; }
+.steps-row { display:flex; gap:8px; margin-top:10px; }
+.steps-row input { flex:1; min-width:0; padding:9px 12px; }
+.steps-row .icon-btn { width:auto; padding:0 14px; height:auto; }
 .food-check { display:flex; align-items:center; gap:9px; font-size:13px; color:var(--muted2); margin:2px 0 13px; cursor:pointer; }
 .food-check input { width:18px; height:18px; accent-color:var(--accent); }
 
@@ -438,6 +441,8 @@ textarea { resize:vertical; }
 //     be logged after the fact; gym sessions are dated by the day they're for.
 //     Manage → restart the run plan from a Monday, or undo repeated weeks.
 //     Food log, food library and targets back up to Airtable too.
+//     Daily steps, entered by hand on Home or in Progress (14-day chart,
+//     7-day average), backed up with weigh-ins.
 // ═══════════════════════════════════════════════════════════
 const WORKER_URL = 'https://gym-tracker.stephen-nolan85.workers.dev';
 const CACHE_KEY = 'cleanslate_v3_cache';
@@ -3467,7 +3472,8 @@ function vProgress() {
     '<div class="phase-g" id="cp-dates">Checkpoints: ' + cps.map(function(c){ return '<b class="cp-text">' + (c.date ? fmtDay(c.date) : '–') + '</b> ' + esc(c.label); }).join(' · ') + '</div>' +
     '<div class="gate-list">' + gateHtml + '</div></div>' + phaseCards +
     '<div class="section-head" style="margin-top:26px">Benchmarks</div>' + benchHtml() +
-    '<div class="section-head" style="margin-top:26px">Body weight</div>' + weightHtml() + '<div style="height:20px"></div></div>';
+    '<div class="section-head" style="margin-top:26px">Body weight</div>' + weightHtml() +
+    '<div class="section-head" style="margin-top:26px" id="steps">Steps</div>' + stepsHtml() + '<div style="height:20px"></div></div>';
 }
 function benchHtml() {
   const b = benchmarks().slice().sort(function(x, y){ return x.date < y.date ? 1 : x.date > y.date ? -1 : y.id - x.id; });
@@ -3533,11 +3539,82 @@ function weightHtml() {
     '<input id="wt-kg" type="number" inputmode="decimal" step="0.1" min="0" placeholder="kg" style="flex:1;min-width:0">' +
     '<button class="icon-btn" style="width:auto;padding:0 14px;height:auto" onclick="weightAdd()">Add</button></div>' + list;
 }
+// ── steps (manual for now) ──────────────────────────────────
+// One entry per day {date, count, at}; `at` is when it was last saved so the
+// newer count wins when syncing. Backed up with weigh-ins in the body record.
+const STEPS_KEY = 'cleanslate_steps';
+function stepsLog() { return (loadJSON(STEPS_KEY) || []).slice().sort(function(a, b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }); }
+function stepsOn(date) { const e = stepsLog().find(function(x){ return x.date === date; }); return e ? e.count : null; }
+function fmtSteps(n) { return Math.round(n).toLocaleString('en-AU'); }
+// average over the 7 days ending on `date`, counting only days with an entry
+function stepsAvg7(date) {
+  const vals = stepsLog().filter(function(x){ const d = daysBetween(x.date, date); return d >= 0 && d < 7; }).map(function(x){ return x.count; });
+  return vals.length ? { avg: vals.reduce(function(a, b){ return a + b; }, 0) / vals.length, n: vals.length } : null;
+}
+function stepsSet(date, count) {
+  const l = stepsLog().filter(function(x){ return x.date !== date; });
+  l.push({ date: date, count: count, at: Date.now() });
+  localStorage.setItem(STEPS_KEY, JSON.stringify(l));
+  bkUnforget('s:' + date); bkSoon();
+}
+function stepsRead(id) {
+  const v = parseInt(String(document.getElementById(id).value).replace(/[^\d]/g, ''), 10);
+  return isNaN(v) || v < 0 || v > 200000 ? null : v;
+}
+function stepsSaveToday() {
+  const n = stepsRead('st-today');
+  if (n == null) { toast('Enter today\'s steps'); return; }
+  stepsSet(todayKey(), n);
+  toast('Steps saved');
+  render();
+}
+function stepsAdd() {
+  const n = stepsRead('st-count'), date = document.getElementById('st-date').value || todayKey();
+  if (n == null) { toast('Enter a step count'); return; }
+  stepsSet(date, n);
+  render();
+}
+function stepsDelete(date) {
+  localStorage.setItem(STEPS_KEY, JSON.stringify(stepsLog().filter(function(x){ return x.date !== date; })));
+  bkForget('s:' + date); bkSoon();
+  render();
+}
+function stepsHomeHtml() {
+  const today = stepsOn(todayKey()), avg = stepsAvg7(addDays(todayKey(), -1));
+  return '<div class="section-head">Steps today</div><div class="food-home steps-home">' +
+    '<div class="fh-row"><div class="fh-kcal" id="st-today-val">' + (today == null ? '–' : fmtSteps(today)) + ' <span class="fh-p">steps</span></div>' +
+    '<div class="fh-p">' + (avg ? 'Previous 7 days avg ' + fmtSteps(avg.avg) : 'No recent days yet') + '</div></div>' +
+    '<div class="steps-row"><input id="st-today" type="text" inputmode="numeric" placeholder="' + (today == null ? 'Steps so far today' : 'Update today\'s steps') + '" aria-label="Steps today">' +
+    '<button class="icon-btn" onclick="stepsSaveToday()">Save</button></div></div>';
+}
+function stepsHtml() {
+  const today = todayKey(), avg = stepsAvg7(addDays(today, -1));   // today is usually a partial count
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(addDays(today, -i));
+  const by = {};
+  stepsLog().forEach(function(x){ by[x.date] = x.count; });
+  const max = Math.max.apply(null, days.map(function(d){ return by[d] || 0; }).concat([1]));
+  const W = 320, H = 110, P = 6, bw = (W - 2 * P) / 14;
+  const bars = days.map(function(d, i) {
+    const v = by[d], h = v ? Math.max(2, (v / max) * (H - 22)) : 0;
+    return (v ? '<rect x="' + (P + i * bw + 2).toFixed(1) + '" y="' + (H - 14 - h).toFixed(1) + '" width="' + (bw - 4).toFixed(1) + '" height="' + h.toFixed(1) + '" rx="2" style="fill:' + (d === today ? 'var(--accent)' : 'var(--cardio)') + '"/>' : '') +
+      (i % 2 === 1 || d === today ? '<text x="' + (P + i * bw + bw / 2).toFixed(1) + '" y="' + (H - 2) + '" text-anchor="middle" style="fill:var(--muted);font-size:9px">' + parseInt(d.slice(8), 10) + '</text>' : '');
+  }).join('');
+  const chart = stepsLog().length ? '<svg class="wchart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Steps, last 14 days">' + bars + '</svg>' +
+    '<div class="wlegend"><span>Last 14 days</span><span style="margin-left:auto">' + (avg ? 'Previous 7 days avg <b style="color:var(--text);font-weight:500">' + fmtSteps(avg.avg) + '</b> (' + avg.n + ' day' + (avg.n === 1 ? '' : 's') + ')' : '') + '</span></div>'
+    : '<div class="rp-line" style="margin:0 0 10px">Add your daily steps to see the last two weeks.</div>';
+  const list = stepsLog().slice(-7).reverse().map(function(x) {
+    return '<div class="hlog-row"><div class="hlog-name">' + fmtDay(x.date) + '</div><div class="hlog-sets">' + fmtSteps(x.count) + ' <button class="rp-link" style="padding:0 0 0 10px" onclick="stepsDelete(\'' + x.date + '\')" aria-label="Delete">✕</button></div></div>';
+  }).join('');
+  return chart + '<div style="display:flex;gap:8px;margin:12px 0 6px"><input id="st-date" type="date" value="' + today + '" style="flex:1.2;min-width:0">' +
+    '<input id="st-count" type="text" inputmode="numeric" placeholder="steps" style="flex:1;min-width:0">' +
+    '<button class="icon-btn" style="width:auto;padding:0 14px;height:auto" onclick="stepsAdd()">Add</button></div>' + list;
+}
 function weightAdd() {
   const kg = parseFloat(document.getElementById('wt-kg').value), date = document.getElementById('wt-date').value || todayKey();
   if (isNaN(kg) || kg <= 0) { toast('Enter your weight in kg'); return; }
   const ws = weighIns().filter(function(w){ return w.date !== date; });
-  ws.push({ date: date, kg: round2(kg) });
+  ws.push({ date: date, kg: round2(kg), at: Date.now() });
   localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws));
   bkUnforget('w:' + date); bkSoon();
   render();
@@ -3640,7 +3717,8 @@ function foodHomeHtml() {
   const pLine = Math.round(t.p) + (tg.protein ? ' / ' + tg.protein : '') + ' g protein';
   return '<div class="section-head">Food today</div>' +
     '<div class="food-home" onclick="nav(\'food\')"><div class="fh-row"><div class="fh-kcal">' + kcalLine + '</div><div class="fh-p">' + pLine + '</div></div>' +
-    (tg.kcal ? foodBar(t.kcal, tg.kcal) : '<div class="fh-sub">' + (t.kcal ? 'Tap to log food' : 'Nothing logged yet · tap to add') + '</div>') + '</div>';
+    (tg.kcal ? foodBar(t.kcal, tg.kcal) : '<div class="fh-sub">' + (t.kcal ? 'Tap to log food' : 'Nothing logged yet · tap to add') + '</div>') + '</div>' +
+    stepsHomeHtml();
 }
 
 // ── day view ────────────────────────────────────────────────
@@ -3923,11 +4001,25 @@ const BK_DELETED_KEY = 'cleanslate_bk_deleted';
 const BK_SENT_KEY = 'cleanslate_bk_sent';
 const BK_LAST_KEY = 'cleanslate_bk_lastsync';
 function bkDeleted() { return loadJSON(BK_DELETED_KEY) || []; }
-function bkForget(key) {   // record a deletion on this phone
+function bkForget(key, at) {   // record a deletion on this phone
   const d = bkDeleted();
   if (d.indexOf(key) < 0) { d.push(key); localStorage.setItem(BK_DELETED_KEY, JSON.stringify(d)); }
+  // weigh-ins, steps and benchmarks are keyed by date/id and can be re-added,
+  // so their deletions carry a time: they only remove entries saved before it
+  if (/^(w|b|s):/.test(key)) { const m = bkDelAt(); m[key] = Math.max(m[key] || 0, at || Date.now()); localStorage.setItem(BK_DEL_AT_KEY, JSON.stringify(m)); }
 }
-function bkUnforget(key) { localStorage.setItem(BK_DELETED_KEY, JSON.stringify(bkDeleted().filter(function(k){ return k !== key; }))); }
+function bkUnforget(key) {
+  localStorage.setItem(BK_DELETED_KEY, JSON.stringify(bkDeleted().filter(function(k){ return k !== key; })));
+  const m = bkDelAt();
+  if (key in m) { delete m[key]; localStorage.setItem(BK_DEL_AT_KEY, JSON.stringify(m)); }
+}
+const BK_DEL_AT_KEY = 'cleanslate_bk_deleted_at';
+function bkDelAt() {
+  const m = loadJSON(BK_DEL_AT_KEY) || {};
+  // deletions recorded before deletion times existed apply to entries without a time
+  bkDeleted().forEach(function(k){ if (/^(w|b|s):/.test(k) && !(k in m)) m[k] = 0; });
+  return m;
+}
 function bkParse(rec) {
   const L = rec && rec.fields && rec.fields.Log;
   if (!L || !/"(rs|run|body|food|foodlib)"/.test(L)) return null;
@@ -3992,29 +4084,65 @@ async function bkSync(remote) {
 
   // weigh-ins + benchmarks (+ plan position) in one record
   const bodies = parsed.filter(function(r){ return r.kind === 'body'; });
-  const rb = { weights: [], benchmarks: [] };
+  const rb = { weights: [], benchmarks: [], steps: [] };
+  const delAt = bkDelAt();
   bodies.forEach(function(r) {
+    // deletions made on other devices (weigh-ins, benchmarks, steps), with their times
+    const m = r.body.deletedAt || {};
+    Object.keys(m).forEach(function(k){ if (!(delAt[k] >= m[k])) delAt[k] = m[k]; });
     rb.weights = rb.weights.concat(r.body.weights || []);
+    rb.steps = rb.steps.concat(r.body.steps || []);
     rb.benchmarks = rb.benchmarks.concat(r.body.benchmarks || []);
     if (r.body.runState && !rb.runState) rb.runState = r.body.runState;
     if (r.body.rsState && !rb.rsState) rb.rsState = r.body.rsState;
   });
-  const ws = loadJSON(WEIGHT_KEY) || [], bs = benchmarks();
-  const wDates = ws.map(function(w){ return w.date; }), bIds = bs.map(function(b){ return b.id; });
-  const addW = [], addB = [];
-  rb.weights.forEach(function(w){ if (wDates.indexOf(w.date) < 0 && deleted.indexOf('w:' + w.date) < 0) { wDates.push(w.date); addW.push(w); } });
-  rb.benchmarks.forEach(function(b){ if (bIds.indexOf(b.id) < 0 && deleted.indexOf('b:' + b.id) < 0) { bIds.push(b.id); addB.push(b); } });
-  if (addW.length) localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws.concat(addW)));
+  const wAt = function(w){ return w.at || 0; }, bAt = function(b){ return b.at || 0; };
+  const dead = function(k, at){ return k in delAt && delAt[k] >= at; };
+  // drop entries another device deleted after they were saved
+  const ws0 = loadJSON(WEIGHT_KEY) || [], bs0 = benchmarks(), ss0 = loadJSON(STEPS_KEY) || [];
+  const ws1 = ws0.filter(function(w){ return !dead('w:' + w.date, wAt(w)); }), bs1 = bs0.filter(function(b){ return !dead('b:' + b.id, bAt(b)); }), ss1 = ss0.filter(function(x){ return !dead('s:' + x.date, x.at || 0); });
+  if (ws1.length !== ws0.length) localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws1));
+  if (bs1.length !== bs0.length) benchSave(bs1);
+  if (ss1.length !== ss0.length) localStorage.setItem(STEPS_KEY, JSON.stringify(ss1));
+  restored += (ws0.length - ws1.length) + (bs0.length - bs1.length) + (ss0.length - ss1.length);
+  const ws = ws1, bs = bs1;
+  const addB = [];
+  let wChanged = 0;
+  rb.weights.forEach(function(w) {
+    if (dead('w:' + w.date, wAt(w))) return;
+    const i = ws.findIndex(function(x){ return x.date === w.date; });
+    if (i < 0) { ws.push(w); wChanged++; }
+    else if (wAt(w) > wAt(ws[i])) { ws[i] = w; wChanged++; }
+  });
+  const bIds = bs.map(function(b){ return b.id; });
+  rb.benchmarks.forEach(function(b){ if (bIds.indexOf(b.id) < 0 && !dead('b:' + b.id, bAt(b))) { bIds.push(b.id); addB.push(b); } });
+  if (wChanged) localStorage.setItem(WEIGHT_KEY, JSON.stringify(ws));
   if (addB.length) benchSave(bs.concat(addB));
-  restored += addW.length + addB.length;
+  restored += wChanged + addB.length;
+  // steps: newer save wins for the same day
+  const sl = stepsLog();
+  let stepsChanged = 0;
+  rb.steps.forEach(function(r) {
+    if (dead('s:' + r.date, r.at || 0)) return;
+    const i = sl.findIndex(function(x){ return x.date === r.date; });
+    if (i < 0) { sl.push(r); stepsChanged++; }
+    else if ((r.at || 0) > (sl[i].at || 0)) { sl[i] = r; stepsChanged++; }
+  });
+  if (stepsChanged) { localStorage.setItem(STEPS_KEY, JSON.stringify(sl)); restored += stepsChanged; }
+  // keep the merged deletion times, minus any whose entry was saved again since
+  weighIns().forEach(function(w){ if ('w:' + w.date in delAt && wAt(w) > delAt['w:' + w.date]) delete delAt['w:' + w.date]; });
+  stepsLog().forEach(function(x){ if ('s:' + x.date in delAt && (x.at || 0) > delAt['s:' + x.date]) delete delAt['s:' + x.date]; });
+  localStorage.setItem(BK_DEL_AT_KEY, JSON.stringify(delAt));
   // a phone with no plan history of its own takes Airtable's
   if (rb.runState && bkRunStateIsDefault(runState())) { runStateSave(rb.runState); if (!bkRunStateIsDefault(runState())) restored++; }
   if (rb.rsState && !localStorage.getItem(RS_STATE_KEY)) { RS = Object.assign(rsDefaultState(), rb.rsState); rsSave(); }
-  const body = { weights: weighIns(), benchmarks: benchmarks(), runState: runState(), rsState: loadJSON(RS_STATE_KEY) || undefined };
+  const deletedAt = {};
+  Object.keys(delAt).sort().forEach(function(k){ deletedAt[k] = delAt[k]; });
+  const body = { weights: weighIns(), benchmarks: benchmarks(), runState: runState(), rsState: loadJSON(RS_STATE_KEY) || undefined, steps: stepsLog(), deletedAt: deletedAt };
   const same = bodies.length === 1 && JSON.stringify(bodies[0].body) === JSON.stringify(body);
-  const empty = !body.weights.length && !body.benchmarks.length && bkRunStateIsDefault(body.runState) && !body.rsState;
+  const empty = !body.weights.length && !body.benchmarks.length && !body.steps.length && !Object.keys(body.deletedAt).length && bkRunStateIsDefault(body.runState) && !body.rsState;
   if (!same && !(empty && !bodies.length)) {
-    const fields = { Date: todayKey(), WorkoutName: 'Weigh-ins, benchmarks & plan', Log: JSON.stringify({ body: body }) };
+    const fields = { Date: todayKey(), WorkoutName: 'Weigh-ins, steps, benchmarks & plan', Log: JSON.stringify({ body: body }) };
     if (bodies.length) {
       await writeThrough('/sessions', 'PATCH', { records: [{ id: bodies[0].recId, fields: fields }] }, true);
       for (const r of bodies.slice(1)) await writeThrough('/sessions?records[]=' + r.recId, 'DELETE', null, true);
