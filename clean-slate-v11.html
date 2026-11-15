@@ -378,6 +378,10 @@ textarea { resize:vertical; }
 .pick-plus { width:28px; height:28px; border-radius:50%; border:1px solid var(--border2); color:var(--accent); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; }
 .fslot-btns { display:flex; align-items:center; gap:12px; }
 .fslot-btns .add-btn { flex:1; }
+.energy-in { display:flex; gap:6px; }
+.energy-in input { flex:1; min-width:0; }
+.energy-in select { width:auto; flex:0 0 auto; padding:11px 8px; }
+.energy-hint { font-size:11px; color:var(--accent); margin-top:4px; min-height:14px; }
 .amt-row { flex-direction:column; align-items:stretch; border-color:var(--accent); }
 .amt-line { display:flex; align-items:center; gap:8px; margin-top:10px; }
 .amt-line input { width:110px; flex:0 0 auto; padding:9px 10px; font-size:16px; }
@@ -449,6 +453,7 @@ textarea { resize:vertical; }
 //     Food log, food library and targets back up to Airtable too.
 //     Food amounts: serving size is an amount + unit (g / ml / serving);
 //     log any amount (306 ml) and edit a logged item's amount later.
+//     Energy can be typed in kJ (converted to kcal, 4.184 kJ = 1 kcal).
 //     Daily steps, entered by hand on Home or in Progress (14-day chart,
 //     7-day average), backed up with weigh-ins.
 // ═══════════════════════════════════════════════════════════
@@ -3933,7 +3938,7 @@ function vFoodAdd() {
     '<div class="form-field"><label class="form-label">Name</label><input id="qa-name" placeholder="e.g. Chicken burrito bowl"></div>' +
     '<div class="form-grid-2"><div class="form-field"><label class="form-label">Amount</label><input id="qa-amt" type="number" inputmode="decimal" min="0" placeholder="1"></div>' +
     '<div class="form-field"><label class="form-label">Unit</label><select id="qa-unit">' + foodUnitOpts('serving') + '</select></div></div>' +
-    '<div class="form-grid-2"><div class="form-field"><label class="form-label">Calories (kcal)</label><input id="qa-kcal" type="number" inputmode="decimal" min="0"></div>' +
+    '<div class="form-grid-2">' + energyFieldHtml('qa-kcal', '') +
     '<div class="form-field"><label class="form-label">Protein (g)</label><input id="qa-p" type="number" inputmode="decimal" min="0"></div></div>' +
     '<div class="form-grid-2"><div class="form-field"><label class="form-label">Carbs (g)</label><input id="qa-c" type="number" inputmode="decimal" min="0" placeholder="optional"></div>' +
     '<div class="form-field"><label class="form-label">Fat (g)</label><input id="qa-f" type="number" inputmode="decimal" min="0" placeholder="optional"></div></div>' +
@@ -3960,10 +3965,34 @@ function foodPickAdd(id) {
   render();
 }
 function foodPickMeal(id) { foodLogMeal(id, ctx.slot || 'snacks', 1); }
+// ── energy input: kcal or kJ ──
+// Labels in Australia often list kilojoules only. The value is always stored in kcal.
+const KJ_PER_KCAL = 4.184;
+function energyFieldHtml(id, kcal) {
+  return '<div class="form-field"><label class="form-label">Energy</label><div class="energy-in">' +
+    '<input id="' + id + '" type="number" inputmode="decimal" min="0" value="' + (kcal === '' || kcal == null ? '' : r1(kcal)) + '" oninput="energyHint(\'' + id + '\')">' +
+    '<select id="' + id + '-u" onchange="energyUnit(\'' + id + '\')" aria-label="Energy unit"><option value="kcal">kcal</option><option value="kj">kJ</option></select></div>' +
+    '<div class="energy-hint" id="' + id + '-hint"></div></div>';
+}
+function energyKcal(id) {   // the field's value in kcal, or null
+  const v = parseFloat(document.getElementById(id).value);
+  if (isNaN(v) || v < 0) return null;
+  return document.getElementById(id + '-u').value === 'kj' ? r1(v / KJ_PER_KCAL) : v;
+}
+function energyHint(id) {
+  const kj = document.getElementById(id + '-u').value === 'kj', k = energyKcal(id);
+  document.getElementById(id + '-hint').textContent = kj ? (k == null ? 'Enter kJ – converted to kcal' : '= ' + Math.round(k) + ' kcal') : '';
+}
+// switching unit converts what's already typed, so the energy stays the same
+function energyUnit(id) {
+  const el = document.getElementById(id), v = parseFloat(el.value), kj = document.getElementById(id + '-u').value === 'kj';
+  if (!isNaN(v)) el.value = kj ? Math.round(v * KJ_PER_KCAL) : r1(v / KJ_PER_KCAL);
+  energyHint(id);
+}
 function foodNum(id) { const v = parseFloat(document.getElementById(id).value); return isNaN(v) || v < 0 ? null : v; }
 function foodQuickAdd() {
-  const kcal = foodNum('qa-kcal');
-  if (kcal == null) { toast('Enter the calories'); return; }
+  const kcal = energyKcal('qa-kcal');
+  if (kcal == null) { toast('Enter the energy (kcal or kJ)'); return; }
   const name = document.getElementById('qa-name').value.trim() || 'Quick add';
   const amt = foodNum('qa-amt') || 1, unit = document.getElementById('qa-unit').value;
   const f = { name: name, amt: amt, unit: unit, serving: fmtAmt(amt, unit), kcal: kcal, p: foodNum('qa-p') || 0, c: foodNum('qa-c') || 0, f: foodNum('qa-f') || 0 };
@@ -4004,13 +4033,13 @@ function vFoodEdit() {
     '<div class="form-grid-2"><div class="form-field"><label class="form-label">Serving size</label><input id="fd-amt" type="number" inputmode="decimal" min="0" value="' + (sv.amt === '' ? '' : r1(sv.amt)) + '" placeholder="e.g. 250"></div>' +
     '<div class="form-field"><label class="form-label">Unit</label><select id="fd-unit">' + foodUnitOpts(sv.unit) + '</select></div></div>' +
     '<div class="rp-line" style="margin:-6px 0 12px">The numbers below are for one serving. When you log it, you can enter any amount.</div>' +
-    '<div class="form-grid-2">' + num('fd-kcal', 'Calories (kcal)', v.kcal) + num('fd-p', 'Protein (g)', v.p) + num('fd-c', 'Carbs (g)', v.c) + num('fd-f', 'Fat (g)', v.f) + '</div>' +
+    '<div class="form-grid-2">' + energyFieldHtml('fd-kcal', v.kcal) + num('fd-p', 'Protein (g)', v.p) + num('fd-c', 'Carbs (g)', v.c) + num('fd-f', 'Fat (g)', v.f) + '</div>' +
     '<button class="save-btn" onclick="foodEditSave()">Save food</button>' + (f ? '<button class="del-btn" onclick="foodEditDelete()">Delete food</button>' : '') + '</div>';
 }
 function foodEditSave() {
-  const name = document.getElementById('fd-name').value.trim(), kcal = foodNum('fd-kcal');
+  const name = document.getElementById('fd-name').value.trim(), kcal = energyKcal('fd-kcal');
   if (!name) { toast('Give it a name'); return; }
-  if (kcal == null) { toast('Enter the calories'); return; }
+  if (kcal == null) { toast('Enter the energy (kcal or kJ)'); return; }
   const lib = foodLib();
   let f = ctx.id ? foodById(ctx.id, lib) : null;
   if (!f) { f = { id: foodId('f') }; lib.foods.push(f); }

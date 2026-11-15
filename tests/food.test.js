@@ -203,3 +203,28 @@ test('items logged before amounts existed can still be changed', async () => {
   const e = (await log()).find((x) => x.id === 'eold1');
   assert.equal(e.kcal, 380); assert.equal(e.qty, 2);
 });
+
+test('energy can be entered in kJ and is stored as kcal', async () => {
+  await page.click('[data-nav=food]');
+  await page.click('text=My foods'); await page.click('text=+ New food');
+  await page.fill('#fd-name', 'Label in kJ'); await page.fill('#fd-amt', '100'); await page.selectOption('#fd-unit', 'g');
+  await page.selectOption('#fd-kcal-u', 'kj');
+  await page.fill('#fd-kcal', '1046');
+  assert.match(await page.textContent('#fd-kcal-hint'), /= 250 kcal/);
+  await page.click('text=Save food');
+  assert.equal((await lib()).foods.find((x) => x.name === 'Label in kJ').kcal, 250);
+  // editing shows kcal; switching the unit converts what's typed
+  await page.click('.mrow:has-text("Label in kJ")');
+  assert.equal(await page.inputValue('#fd-kcal'), '250');
+  await page.selectOption('#fd-kcal-u', 'kj');
+  assert.equal(await page.inputValue('#fd-kcal'), '1046');
+  await page.selectOption('#fd-kcal-u', 'kcal');
+  assert.equal(await page.inputValue('#fd-kcal'), '250');
+  await page.click('.back-btn'); await page.click('.back-btn');
+  // quick add in kJ
+  await page.click('.fslot-btns >> nth=3 >> .add-btn');
+  await page.fill('#qa-name', 'Muesli bar'); await page.selectOption('#qa-kcal-u', 'kj'); await page.fill('#qa-kcal', '420');
+  await page.click('.save-btn');
+  assert.equal((await log()).find((x) => x.name === 'Muesli bar').kcal, 100.4);
+  assert.deepEqual(page.errors, []);
+});
