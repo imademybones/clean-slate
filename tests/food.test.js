@@ -48,18 +48,23 @@ test('one tap logs the usual breakfast as six items, 676 kcal / 50 g protein', a
   assert.match(await page.textContent('.fs-macros'), /17 \/ 60 g/);
 });
 
-test('remove an item, then add it back at half a portion from the add screen', async () => {
+test('remove an item, then add it back as an exact amount from the add screen', async () => {
   const latte = page.locator('.fe-row', { hasText: 'Iced Oat Latte' });
   await latte.locator('.icon-btn').click();
   assert.equal(await page.textContent('.fs-big'), '526');
   await page.click('.fslot-btns >> nth=0 >> .add-btn');
   await page.waitForSelector('#food-pick');
-  await page.click('.fb-opt:has-text("½")');
   await page.fill('#food-q', 'latte');
   assert.equal(await page.locator('#food-pick .pick-row').count(), 1);
+  assert.match(await page.textContent('#food-pick .pick-row'), /473 ml/);
   await page.click('#food-pick .pick-row');
+  // the amount box opens with one serving (473 ml); half of it is 236.5 ml
+  assert.equal(await page.inputValue('#amt-in-pick-seed-latte'), '473');
+  await page.fill('#amt-in-pick-seed-latte', '236.5');
+  assert.match(await page.textContent('#amt-prev-pick-seed-latte'), /= 75 kcal/);
+  await page.click('#amt-pick-seed-latte >> text=Add');
   const e = (await log()).find((x) => /Latte/.test(x.name));
-  assert.equal(e.qty, 0.5); assert.equal(e.kcal, 75);
+  assert.equal(e.qty, 0.5); assert.equal(e.kcal, 75); assert.equal(e.amt, 236.5); assert.equal(e.unit, 'ml');
   await page.click('text=Done');
   assert.equal(await page.textContent('.fs-big'), '601');
 });
@@ -68,11 +73,11 @@ test('quick add, saved to My foods, then reusable', async () => {
   await page.click('.fslot-btns >> nth=1 >> .add-btn');   // lunch
   await page.fill('#qa-name', 'Chicken burrito bowl');
   await page.fill('#qa-kcal', '640'); await page.fill('#qa-p', '45');
-  await page.check('#qa-save'); await page.fill('#qa-serv', '1 bowl');
+  await page.check('#qa-save');
   await page.click('.save-btn');
   const l = await lib();
   const bowl = l.foods.find((f) => f.name === 'Chicken burrito bowl');
-  assert.equal(bowl.serving, '1 bowl');
+  assert.equal(bowl.serving, '1 serving'); assert.equal(bowl.amt, 1); assert.equal(bowl.unit, 'serving');
   assert.equal((await log()).filter((e) => e.slot === 'lunch').length, 1);
   await page.fill('#food-q', 'burrito');
   assert.equal(await page.locator('#food-pick .pick-row').count(), 1);
@@ -110,11 +115,12 @@ test('save a slot as a meal; editing a food leaves past days alone', async () =>
   assert.equal((await lib()).foods.find((f) => f.id === 'seed-oats').kcal, 200);
 });
 
-test('meal editor: change servings and remove a food', async () => {
+test('meal editor: change amounts and remove a food', async () => {
   await page.click('.mrow:has-text("Usual breakfast") >> nth=0');
   await page.waitForSelector('#ml-name');
   await page.locator('.mrow:has-text("Maple") .icon-btn').click();
-  await page.locator('.mrow:has-text("Protein Powder") input').fill('2');
+  assert.equal(await page.locator('.mrow:has-text("Protein Powder") input').inputValue(), '30');   // grams now
+  await page.locator('.mrow:has-text("Protein Powder") input').fill('60');
   await page.locator('.mrow:has-text("Protein Powder") input').dispatchEvent('change');
   await page.click('text=Save meal');
   const m = (await lib()).meals[0];
@@ -148,4 +154,52 @@ test('future days: plan tomorrow, then come back to today', async () => {
   assert.match(await page.textContent('.fd-label'), /^Today/);
   assert.match(await page.textContent('.food-home, .fs-big'), /1241/, 'today unchanged');
   assert.deepEqual(page.errors, []);
+});
+
+test('a food with a serving size: log any amount, then change a logged amount', async () => {
+  // the example: oat milk, 250 ml = 96 kcal, but 306 ml was had
+  await page.click('[data-nav=food]');
+  await page.click('text=My foods'); await page.click('text=+ New food');
+  await page.fill('#fd-name', 'So Good Oat Milk'); await page.fill('#fd-amt', '250'); await page.selectOption('#fd-unit', 'ml');
+  await page.fill('#fd-kcal', '96'); await page.fill('#fd-p', '1');
+  await page.click('text=Save food');
+  const f = (await lib()).foods.find((x) => x.name === 'So Good Oat Milk');
+  assert.deepEqual([f.amt, f.unit, f.serving], [250, 'ml', '250 ml']);
+  await page.click('.back-btn');   // back to Food
+  await page.click('.fslot-btns >> nth=3 >> .add-btn');   // snacks
+  await page.fill('#food-q', 'so good');   // also matches the seeded Sanitarium oat milk
+  await page.locator('#food-pick .pick-row').filter({ hasNotText: 'Sanitarium' }).click();
+  await page.fill('#amt-in-pick-' + f.id, '306');
+  assert.match(await page.textContent('#amt-prev-pick-' + f.id), /= 118 kcal/);
+  await page.click('#amt-pick-' + f.id + ' >> text=Add');
+  let e = (await log()).find((x) => x.name === 'So Good Oat Milk');
+  assert.equal(e.kcal, 117.5); assert.equal(e.amt, 306);
+  await page.click('text=Done');
+  // change it: tap the item, enter 150 ml
+  const row = page.locator('.fe-row', { hasText: 'So Good Oat Milk' }).filter({ hasNotText: 'Sanitarium' });
+  assert.match(await row.textContent(), /306 ml/);
+  await row.locator('.fe-main').click();
+  await page.fill('#amt-in-ent-' + e.id, '150');
+  assert.match(await page.textContent('#amt-prev-ent-' + e.id), /= 58 kcal/);
+  await page.click('#amt-ent-' + e.id + ' >> text=Save');
+  e = (await log()).find((x) => x.id === e.id);
+  assert.equal(e.kcal, 57.6); assert.equal(e.amt, 150);
+  assert.match(await row.textContent(), /150 ml/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('items logged before amounts existed can still be changed', async () => {
+  // an old-style entry: 1.5 × "50 g" of oats, no amount stored
+  await page.evaluate(() => {
+    const l = foodLog();
+    l.push({ id: 'eold1', date: todayKey(), slot: 'breakfast', food: 'seed-oats', name: 'Old oats', serving: '50 g', qty: 1.5, kcal: 285, p: 10.5, c: 42, f: 6 });
+    localStorage.cleanslate_food_log = JSON.stringify(l); render();
+  });
+  const row = page.locator('.fe-row', { hasText: 'Old oats' });
+  assert.match(await row.textContent(), /75 g/);
+  await row.locator('.fe-main').click();
+  await page.fill('#amt-in-ent-eold1', '100');
+  await page.click('#amt-ent-eold1 >> text=Save');
+  const e = (await log()).find((x) => x.id === 'eold1');
+  assert.equal(e.kcal, 380); assert.equal(e.qty, 2);
 });
