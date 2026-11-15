@@ -29,7 +29,7 @@ test('a day of food, a saved food and new targets reach Airtable', async () => {
   await a.fill('#tg-kcal', '2200'); await a.click('text=Save targets');
   await a.click('.fslot-btns >> nth=1 >> .add-btn');
   await a.fill('#qa-name', 'Chicken burrito bowl'); await a.fill('#qa-kcal', '640'); await a.fill('#qa-p', '45');
-  await a.check('#qa-save'); await a.fill('#qa-serv', '1 bowl');
+  await a.check('#qa-save');
   await a.click('.save-btn');
   await a.click('text=Done');
   await settle(a);
@@ -96,6 +96,21 @@ test('library edits: the newer copy wins, deleted foods stay deleted everywhere'
   const remote = recs('foodlib')[0];
   assert.equal(remote.foods.find((f) => f.id === 'seed-oats').kcal, 200);
   assert.ok(remote.deleted.includes('ff:seed-maple'));
+  assert.deepEqual(a.errors.concat(b.errors), []);
+  await b.context().close();
+});
+
+test('an amount changed on one device reaches the other', async () => {
+  const b = await h.newPage(browser, srv.url, worker, { programme: 'rs', time: NOW });
+  await b.waitForFunction(() => foodLog().length === 6, null, { timeout: 5000 });
+  const id = await b.evaluate(() => foodLog().find((e) => /Oats/.test(e.name)).id);
+  await b.clock.setSystemTime(new Date('2026-11-09T12:00:00'));   // b's edit is the later one
+  await b.evaluate((id) => { const l = foodLog(); const e = l.find((x) => x.id === id); scaleEntry(e, entryBase(e), 75); foodLogSave(l); }, id);
+  await settle(b);
+  await a.evaluate(() => rpSync()); await settle(a);
+  const e = await a.evaluate((id) => foodLog().find((x) => x.id === id), id);
+  assert.equal(e.amt, 75); assert.equal(e.kcal, 285);
+  assert.equal(recs('food')[0].entries.find((x) => x.id === id).amt, 75);
   assert.deepEqual(a.errors.concat(b.errors), []);
   await b.context().close();
 });
